@@ -13,8 +13,12 @@ class InvertedIndex:
         self.docmap = dict() #dictionary mapping document IDs to their full document objects
 
     def __add_document(self, doc_id, text):
-        tokens = text.lower().split()
+        stemmer = PorterStemmer()
+        translator = str.maketrans('','',string.punctuation)
+        tokens = text.translate(translator).lower().split()
+
         for token in tokens:
+            token = stemmer.stem(token)
             if token not in self.index:
                 self.index[token] = set()
             self.index[token].add(doc_id)
@@ -28,7 +32,7 @@ class InvertedIndex:
             data = json.load(file)
             for movie in data["movies"]:
                 #add movie to docmap and index
-                self.docmap[movie['id']] = f"{movie['title']} {movie['description']}"
+                self.docmap[movie['id']] = movie
                 self.__add_document(movie['id'], f"{movie['title']} {movie['description']}")
 
     def save(self):
@@ -39,6 +43,22 @@ class InvertedIndex:
     
         with open('cache/docmap.pkl', 'wb') as file:
             pickle.dump(self.docmap, file)
+
+    def load(self):
+
+        try:
+            with open('cache/index.pkl', 'rb') as file:
+                self.index = pickle.load(file)
+        
+            with open('cache/docmap.pkl', 'rb') as file:
+                self.docmap = pickle.load(file)
+
+        except FileNotFoundError as e:
+            raise FileNotFoundError(f"Required cache file is not founded: {e.filename}")
+        except pickle.UnpicklingError:
+            raise ValueError("Cache file is corrupted or not a valid pickle file")
+
+        
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Keyword Search CLI")
@@ -55,6 +75,17 @@ def main() -> None:
         case "search":
             # print the search query here
             print(f"Searching for: {args.query}")
+
+            inverted_index = InvertedIndex()
+            
+            try:
+                inverted_index.load()
+            except FileNotFoundError as e:
+                print(e)
+                exit(1)
+            except Exception as e:
+                print(f"Unexpected error loading index: {e}")
+                exit(1)
 
             #load stopwords
             stopwords = []
@@ -76,36 +107,28 @@ def main() -> None:
             #stemmed_query_tokens
             stemmed_query_tokens = list(map(stemmer.stem, filtered_query_tokens))
 
-            results = []
+            matched_doc_ids = set()
 
-            with open("data/movies.json", "r") as file:
-                data = json.load(file)
-                counter = 0
-                for movie in data["movies"]:
-                    #transform title steps 
-                    title_clean = movie["title"].translate(translator).lower()
-                    title_tokens = title_clean.split()
-                    filtered_title_tokens = [word for word in title_tokens if word not in stopwords]
-                    stemmed_title_tokens = list(map(stemmer.stem, filtered_title_tokens))
+            for token in stemmed_query_tokens:
 
-                    #for each search token, check if its a substring of any token in the title
-                    if any(token in word for word in stemmed_title_tokens for token in stemmed_query_tokens):
-                        results.append(movie)
-                        counter += 1
+                matching_documents = inverted_index.get_documents(token)
 
-                    #stop searching when we reach 5 movies
-                    if counter > 4:
+                for doc_id in matching_documents:
+                    if len(matched_doc_ids) >= 5:
                         break
+                    matched_doc_ids.add(doc_id)
 
-                for i, result in enumerate(results):
-                    print(f"{i + 1}: {result['title']}")
+                if len(matched_doc_ids) >= 5:
+                    break
+
+            for doc_id in matched_doc_ids:
+                movie = inverted_index.docmap[doc_id]
+                print(movie['title'])
+
         case "build":
             inverted_index = InvertedIndex()
             inverted_index.build()
             inverted_index.save()
-
-            docs = inverted_index.get_documents("merida")
-            print(f"First document for token 'merida' = {docs[0]}")
 
         case _:
             parser.print_help()
