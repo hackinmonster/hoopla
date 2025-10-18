@@ -7,6 +7,7 @@ from nltk.stem import PorterStemmer
 from collections import Counter
 import pickle
 import os
+import math
 
 class InvertedIndex:
     def __init__(self):
@@ -14,15 +15,13 @@ class InvertedIndex:
         self.docmap = dict() #dictionary mapping document IDs to their full document objects
         self.term_frequencies = dict()
 
-    def __add_document(self, doc_id, text):
-        stemmer = PorterStemmer()
-        translator = str.maketrans('','',string.punctuation)
-        tokens = text.translate(translator).lower().split()
+    def _add_document(self, doc_id, text):
+
+        tokens = self.tokenize(text)
         #each document corresponds to counter object. inside counter, each key is a term, and the value is a frequency
         self.term_frequencies[doc_id] = Counter()
 
         for token in tokens:
-            token = stemmer.stem(token)
             if token not in self.index:
                 self.index[token] = set()
             self.index[token].add(doc_id)
@@ -40,7 +39,7 @@ class InvertedIndex:
                 #add movie to docmap and index
                 doc_id = str(movie['id'])
                 self.docmap[doc_id] = movie
-                self.__add_document(doc_id, f"{movie['title']} {movie['description']}")
+                self._add_document(doc_id, f"{movie['title']} {movie['description']}")
 
     def save(self):
         os.makedirs('cache', exist_ok=True)
@@ -68,22 +67,28 @@ class InvertedIndex:
                 self.term_frequencies = pickle.load(file)
 
         except FileNotFoundError as e:
-            raise FileNotFoundError(f"Required cache file is not founded: {e.filename}")
+            raise FileNotFoundError(f"Required cache file is not found: {e.filename}")
         except pickle.UnpicklingError:
             raise ValueError("Cache file is corrupted or not a valid pickle file")
         
 
     def get_tf(self, doc_id: str, term: str) -> int:
+
+        token = self.tokenize(term)
+
+        if len(token) != 1:
+            raise Exception(f"Expected exactly one token in term: {term}")
+        
+        tokenized_term = token[0]
+        
+        return self.term_frequencies.get(doc_id, {}).get(tokenized_term, 0) #return frequency of term in document
+    
+    def tokenize(self, term):
         stemmer = PorterStemmer()
         translator = str.maketrans('','',string.punctuation)
         tokens = term.translate(translator).lower().split()
-
-        if len(tokens) != 1:
-            raise Exception(f"Expected exactly one token in term: {term}")
-        
-        tokenized_term = stemmer.stem(tokens[0])
-        
-        return self.term_frequencies[doc_id].get(tokenized_term, 0) #return frequency of term in document
+        tokenized_terms = [stemmer.stem(token) for token in tokens]
+        return tokenized_terms
 
         
 
@@ -99,6 +104,14 @@ def main() -> None:
     tf_parser = subparsers.add_parser("tf", help="Return term frequency")
     tf_parser.add_argument("document_id", type=str, help="document to search in")
     tf_parser.add_argument("term", type=str, help="term to search")
+
+    idf_parser = subparsers.add_parser("idf", help="Return inverse document frequency")
+    idf_parser.add_argument("term", type=str, help="term to search")
+
+    tfidf_parser = subparsers.add_parser("tfidf", help="Returns tf-idf score")
+    tfidf_parser.add_argument("document_id", type=str, help="document to search in")
+    tfidf_parser.add_argument("term", type=str, help="term to search")
+
 
 
     args = parser.parse_args()
@@ -124,24 +137,17 @@ def main() -> None:
             with open("data/stopwords.txt", "r") as file:
                 lines = file.read().splitlines()
                 for line in lines:
-                    stopwords.append(line)       
+                    stopwords.append(line)  
 
-            #create stemmer
-            stemmer = PorterStemmer()          
+            query_tokens = inverted_index.tokenize(args.query)     
 
-            #remove punctuation (third arg)
-            translator = str.maketrans('', '', string.punctuation) 
-            query_clean = args.query.translate(translator).lower()
-            #tokenize by word
-            query_tokens = query_clean.split()
             #remove stopwords
             filtered_query_tokens = [word for word in query_tokens if word not in stopwords]
-            #stemmed_query_tokens
-            stemmed_query_tokens = list(map(stemmer.stem, filtered_query_tokens))
+
 
             matched_doc_ids = set()
 
-            for token in stemmed_query_tokens:
+            for token in filtered_query_tokens:
 
                 matching_documents = inverted_index.get_documents(token)
 
@@ -168,8 +174,48 @@ def main() -> None:
             term_frequency = inverted_index.get_tf(args.document_id, args.term)
             print(term_frequency)
 
+        case "idf":
+            inverted_index = InvertedIndex()
+
+            term = args.term
+            tokens = inverted_index.tokenize(term)
+            if not tokens:
+                print("No valid tokens found in term")
+                exit(1)
+            tokenized_term = tokens[0]
+
+            inverted_index.load()
+            doc_count = len(inverted_index.docmap)
+            term_doc_count = len(inverted_index.index.get(tokenized_term, set()))
+
+            idf = math.log((doc_count + 1) / (term_doc_count + 1))
+
+            print(f"Inverse document frequency of '{args.term}': {idf:.2f}")
+
+        case "tfidf":
+            doc_id = args.document_id
+            term = args.term
+
+            inverted_index = InvertedIndex()
+            inverted_index.load()
+            tokens = inverted_index.tokenize(term)
+
+            tf_idf = 0
+
+            for token in tokens:
+                token_tf = inverted_index.get_tf(doc_id, token)
+
+                doc_count = len(inverted_index.docmap)
+                term_doc_count = len(inverted_index.index.get(token, set()))
+                token_idf = math.log((doc_count + 1) / (term_doc_count + 1))
+
+                tf_idf += token_tf * token_idf
+
+            print(f"TF-IDF score of '{term}' in document '{doc_id}': {tf_idf:.2f}")
+
         case _:
             parser.print_help()
+
 
 
 if __name__ == "__main__":
