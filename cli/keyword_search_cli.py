@@ -8,25 +8,42 @@ from collections import Counter
 import pickle
 import os
 import math
-from search_utils import BM25_K1
+from search_utils import BM25_K1, BM25_B
 
 class InvertedIndex:
     def __init__(self):
         self.index = dict() #dictionary mapping tokens to sets of document IDs
         self.docmap = dict() #dictionary mapping document IDs to their full document objects
         self.term_frequencies = dict()
+        self.doc_lengths = dict()
+        self.doc_lengths_path = os.path.join("../cache/", "doc_lengths.pkl")
 
     def _add_document(self, doc_id, text):
 
         tokens = self.tokenize(text)
         #each document corresponds to counter object. inside counter, each key is a term, and the value is a frequency
         self.term_frequencies[doc_id] = Counter()
+        doc_length = 0
 
         for token in tokens:
             if token not in self.index:
                 self.index[token] = set()
             self.index[token].add(doc_id)
             self.term_frequencies[doc_id][token] += 1
+            doc_length += 1
+
+        self.doc_lengths[doc_id] = doc_length
+
+    #private helper
+    def __get_avg_doc_length(self) -> float:
+        sum_length = 0
+        count_docs = len(self.doc_lengths)
+        if count_docs == 0:
+            return 0
+        for doc in self.doc_lengths:
+            sum_length += self.doc_lengths[doc]
+        avg_length = sum_length / count_docs
+        return avg_length
 
 
     def get_documents(self, term):
@@ -55,6 +72,9 @@ class InvertedIndex:
         with open('cache/term_frequencies.pkl', 'wb') as file:
             pickle.dump(self.term_frequencies, file)
 
+        with open('cache/doc_lengths.pkl', 'wb') as file:
+            pickle.dump(self.doc_lengths, file)
+
     def load(self):
 
         try:
@@ -66,6 +86,9 @@ class InvertedIndex:
 
             with open('cache/term_frequencies.pkl', 'rb') as file:
                 self.term_frequencies = pickle.load(file)
+
+            with open('cache/doc_lengths.pkl', 'rb') as file:
+                self.doc_lengths = pickle.load(file)
 
         except FileNotFoundError as e:
             raise FileNotFoundError(f"Required cache file is not found: {e.filename}")
@@ -103,14 +126,19 @@ class InvertedIndex:
         bm25idf = self.get_bm25_idf(tokenized_term)
         return bm25idf
 
-    def get_bm25_tf(self, doc_id: str, term: str, k1: float = BM25_K1) -> float:
+    def get_bm25_tf(self, doc_id: str, term: str, k1: float = BM25_K1, b: float = BM25_B) -> float:
         tf = self.get_tf(doc_id, term)
-        saturated_tf = (tf * (k1 + 1)) / (tf + k1)
-        return saturated_tf
+        doc_length = self.doc_lengths[doc_id]
+        avg_doc_length = self.__get_avg_doc_length()
+
+        length_norm = 1 - b + b * (doc_length / avg_doc_length)
+        tf_component = (tf * (k1 + 1)) / (tf + k1 * length_norm)
+
+        return tf_component
     
-    def bm25_tf_command(self, doc_id: str, term: str, k1: float = BM25_K1) -> float:
+    def bm25_tf_command(self, doc_id: str, term: str, k1: float = BM25_K1, b: float = BM25_B) -> float:
         self.load()
-        bm25_tf = self.get_bm25_tf(doc_id, term)
+        bm25_tf = self.get_bm25_tf(doc_id, term, k1, b)
         return bm25_tf
     
     
@@ -150,6 +178,7 @@ def main() -> None:
     bm25_tf_parser.add_argument("document_id", type=str, help="Document ID")
     bm25_tf_parser.add_argument("term", type=str, help="Term to get BM25 TF score for")
     bm25_tf_parser.add_argument("k1", type=float, nargs='?', default=BM25_K1, help="Tunable BM25 K1 parameter")
+    bm25_tf_parser.add_argument("b", type=float, nargs='?', default=BM25_B, help="Tunable BM25 b parameter")
 
 
 
@@ -263,7 +292,7 @@ def main() -> None:
         case "bm25tf":
             doc_id = str(args.document_id)
             inverted_index = InvertedIndex()
-            bm25tf = inverted_index.bm25_tf_command(doc_id, args.term)
+            bm25tf = inverted_index.bm25_tf_command(doc_id, args.term, args.k1, args.b)
             print(f"BM25 TF score of '{args.term}' in document '{args.document_id}': {bm25tf:.2f}")
             
         case _:
